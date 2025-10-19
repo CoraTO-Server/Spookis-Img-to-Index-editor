@@ -51,7 +51,7 @@ A powerful, browser-based palette editor for converting images to BMP v-24 forma
 ## 🚀 Getting Started
 
 ### Quick Start
-1. **Open** `PalletteEditor8.html` in any modern web browser
+1. **Open** `PalletteEditor.html` in any modern web browser
 2. **Upload** one or more image files using the file input
 3. **Select** colors from the extracted palette grid
 4. **Adjust** colors using HSL sliders or hex input
