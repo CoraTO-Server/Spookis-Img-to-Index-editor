@@ -7,6 +7,8 @@
 
 A powerful, browser-based palette editor for converting images to BMP v-24 format with advanced color remapping capabilities. Perfect for pixel art, game development, and animation workflows! ✨
 
+![Preview](preview.gif)
+
 ## 🌟 Features
 
 ### 🎯 **Core Functionality**
@@ -148,6 +150,8 @@ The editor uses advanced color space mathematics:
 **Created with love by Admin Spooki/Snoobert of CoraTO** 💜
 
 *Making Mewsie very proud every day!* 🐱✨
+
+<!-- altho he is a stinky dinky snoobert ;) -->
 
 ---
 
