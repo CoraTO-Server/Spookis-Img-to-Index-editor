@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image to BMP v-24 Palette Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        
+        /* Custom Styles for Palette Boxes */
+        .color-box {
+            width: 20px;
+            height: 20px;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+        .color-box:hover {
+            transform: scale(1.1);
+            box-shadow: 0 0 5px rgba(240, 0, 240, 0.7);
+        }
+        .selected-box {
+            border: 3px solid #f97316; /* Orange-600: Confirmed selection */
+            box-shadow: 0 0 10px #f97316;
+        }
+        .live-hover-box {
+            outline: 3px solid #3b82f6; /* Blue-500: Live eyedropper feedback */
+            outline-offset: -3px;
+        }
+        #palette-grid {
+            grid-template-columns: repeat(16, minmax(0, 1fr));
+            grid-template-rows: repeat(16, minmax(0, 1fr));
+        }
+        #palette-grid.empty {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Canvas Container for Panning and Fixed Height */
+        #canvas-container {
+            width: 100%;
+            height: 400px; /* Fixed height for consistent look */
+            overflow: hidden; /* Hide overflow, panning is done via transform */
+            cursor: grab; /* Default cursor for panning */
+            position: relative;
+            /* CRITICAL FIX: Prevents text/image selection from interfering with panning */
+            -webkit-user-select: none; 
+            -ms-user-select: none;     
+            user-select: none;         
+        }
+        #canvas-container.panning {
+            cursor: grabbing;
+        }
+        
+        /* Preview Canvas - CRITICAL: No transform: scale() here anymore! */
+        #preview-canvas {
+            image-rendering: pixelated; /* Crucial for sharp zoom */
+            transition: width 0.1s ease-out, height 0.1s ease-out; /* Smooth size transitions */
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            /* Canvas will be positioned via transform */
+        }
+        #preview-canvas.eyedropper-active {
+            cursor: crosshair;
+        }
+        
+        .tile-canvas {
+            image-rendering: pixelated;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div class="max-w-6xl mx-auto bg-white p-6 md:p-10 rounded-xl shadow-2xl">
+        <h1 class="text-3xl font-extrabold text-purple-700 mb-2">Image to BMP v-24 Palette Editor</h1>
+        <p class="text-gray-500 mb-6">Select **multiple files** to load animation frames. All color mappings are **global and persistent** across all frames.</p>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            
+            <div class="lg:col-span-2">
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2">Main Preview & Frame Controls</h2>
+                
+                <input type="file" id="image-upload" accept="image/*" multiple class="mb-4 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100"/>
+                
+                <div id="canvas-container" class="relative bg-gray-900 border-2 border-gray-700 rounded-lg overflow-auto">
+                    <canvas id="preview-canvas" style="display:none;"></canvas>
+                    <p id="canvas-placeholder" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-gray-500">Upload one or more frames to preview.</p>
+                </div>
+                
+                <div class="mt-3 flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-3 sm:space-y-0">
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2 text-sm font-semibold text-gray-700">
+                            <span>Zoom:</span>
+                            <button id="zoom-out-btn" class="w-8 h-8 rounded-full bg-gray-200 hover:bg-gray-300 transition" disabled>-</button>
+                            <span id="zoom-level-text" class="w-10 text-center">100%</span>
+                            <button id="zoom-in-btn" class="w-8 h-8 rounded-full bg-gray-200 hover:bg-gray-300 transition" disabled>+</button>
+                        </div>
+                         <div class="flex items-center space-x-2 text-sm font-semibold text-gray-700 ml-4">
+                            <button id="prev-frame-btn" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-gray-700 font-bold" disabled>&lt; Prev</button>
+                            <span id="frame-status" class="w-16 text-center text-purple-600 font-bold">0/0</span>
+                            <button id="next-frame-btn" class="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded-lg transition text-gray-700 font-bold" disabled>Next &gt;</button>
+                        </div>
+                    </div>
+
+                    <button id="eyedropper-btn" class="px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg shadow hover:bg-indigo-600 transition duration-150" disabled>
+                        Activate Eyedropper
+                    </button>
+                </div>
+
+                <div class="mt-3 flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
+                    <button id="reset-position-btn" class="px-3 py-1 bg-gray-500 text-white text-sm font-semibold rounded-lg shadow hover:bg-gray-600 transition duration-150" disabled>
+                        Reset Position (X)
+                    </button>
+                    <div class="flex space-x-4">
+                        <p class="text-sm text-gray-600">Color Read: <span id="read-color" class="font-mono text-sm">--</span></p>
+                        <p class="text-sm text-gray-600">Live Index: <span id="live-index" class="font-bold text-sm text-blue-500">--</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-1">
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2">Step 1: Source Index (From File)</h2>
+                <div id="palette-grid" class="grid w-full aspect-square bg-gray-100 border border-gray-300 rounded-lg overflow-hidden empty">
+                    <p class="text-center text-gray-500">Load image to extract palette.</p>
+                </div>
+                <p class="text-sm mt-3 text-gray-600">Confirmed Index: <span id="selected-index" class="font-bold text-lg text-purple-600">--</span></p>
+                <p class="text-sm text-gray-600">Original Color: <span id="original-color" class="font-mono text-xs">--</span></p>
+                <div class="mt-3 space-y-2">
+                    <button id="multiselect-btn" class="w-full px-3 py-2 bg-blue-500 text-white text-sm font-semibold rounded-lg shadow hover:bg-blue-600 transition duration-150">
+                        Enable Multiselect
+                    </button>
+                    <p id="multiselect-status" class="text-xs text-gray-500 text-center hidden">Multiselect: OFF | Selected: 0</p>
+                    <p class="text-xs text-gray-400 text-center">Hold Shift+Click for range selection</p>
+                </div>
+            </div>
+            
+            <div class="lg:col-span-1">
+                
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2">Step 2: Target Color Adjustment (HSL)</h2>
+                <div class="bg-purple-50 p-4 rounded-lg shadow-inner mb-6 space-y-3">
+                    
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Hue <span id="hue-value" class="float-right font-mono text-xs">300°</span></label>
+                        <input type="range" id="slider-hue" min="0" max="360" value="300" class="w-full h-2 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Saturation <span id="saturation-value" class="float-right font-mono text-xs">100.0%</span></label>
+                        <input type="range" id="slider-saturation" min="0" max="100" value="100" step="0.1" class="w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    
+                    <div class="space-y-1">
+                        <label class="block text-sm font-medium text-gray-700">Lightness <span id="lightness-value" class="float-right font-mono text-xs">50.0%</span></label>
+                        <input type="range" id="slider-lightness" min="0" max="100" value="50" step="0.1" class="w-full h-2 bg-gray-300 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    
+                    <div class="flex items-center space-x-2 pt-2">
+                        <input type="color" id="color-picker" value="#ff00ff" class="w-10 h-10 rounded-lg p-0 border-none cursor-pointer">
+                        <input type="text" id="target-hex" value="#FF00FF" maxlength="7" class="w-full rounded-lg border-gray-300 shadow-sm p-2 font-mono text-sm uppercase">
+                    </div>
+                    <p class="text-sm">
+                        Target Preview: <span id="target-preview" class="inline-block w-4 h-4 rounded-sm border border-gray-400" style="background-color: #ff00ff;"></span>
+                    </p>
+                    <button id="add-mapping-btn" class="mt-4 w-full px-4 py-2 bg-green-400 text-white font-semibold rounded-lg shadow transition duration-150" disabled>
+                        Mapping is now LIVE (No click needed)
+                    </button>
+                </div>
+                
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2">Step 3: Generated Mappings</h2>
+                <div class="bg-gray-800 p-4 rounded-lg shadow-md">
+                    <pre id="mapping-output" class="text-green-400 text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">/* Your custom palette mappings will appear here. */</pre>
+                </div>
+                
+                <button id="copy-btn" class="mt-4 w-full px-4 py-2 bg-purple-500 text-white font-semibold rounded-lg shadow hover:bg-purple-600 transition duration-150" disabled>
+                    Copy Mappings to Clipboard
+                </button>
+
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2 mt-6">Step 4: Export Frames</h2>
+                <div class="space-y-3">
+                    <button id="export-png-btn" class="w-full px-4 py-3 bg-yellow-500 text-white font-bold rounded-lg shadow hover:bg-yellow-600 transition duration-150" disabled>
+                        Export All Frames as PNG
+                    </button>
+                    <button id="export-bmp-btn" class="w-full px-4 py-3 bg-red-500 text-white font-bold rounded-lg shadow hover:bg-red-600 transition duration-150" disabled>
+                        Export All Frames as BMP v-24
+                    </button>
+                </div>
+            </div>
+
+            <div class="lg:col-span-4 mt-6">
+                <h2 class="text-xl font-bold text-gray-800 mb-3 border-b pb-2">Multi-Frame Animation Preview</h2>
+                <div class="flex items-center mb-4 space-x-4">
+                    <label for="frames-to-show" class="font-medium text-gray-700">Frames to show:</label>
+                    <input type="number" id="frames-to-show" value="3" min="1" class="w-20 p-2 border rounded-lg text-center shadow-sm" />
+                </div>
+                <div id="tiled-preview-container" class="flex overflow-x-auto p-2 bg-gray-100 rounded-lg shadow-inner border border-gray-300">
+                    <p class="text-gray-500">Load files to see animation strip.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Core Application Logic ---
+
+        const PALETTE_SIZE = 256;
+        const colorMap = {}; 
+        const paletteColors = []; 
+        let selectedIndex = null;
+        let isEyedropperActive = false;
+        
+        // --- Multiselect Variables ---
+        let isMultiselectEnabled = false;
+        let selectedIndices = new Set();
+        let lastSelectedIndex = null;
+        let baseHSLValues = {}; // Store original HSL values when multiselect changes
+        let baseHSL = { h: 0, s: 0, l: 0 }; // Base HSL from first selection
+        
+        // --- Zoom Variables ---
+        let zoomLevel = 2; // Initial zoom level
+        const ZOOM_LEVELS = [1, 2, 3, 4, 6, 8, 12, 16]; 
+        
+        // --- Multi-Frame & Pan Variables ---
+        let currentImages = []; 
+        let currentFrameIndex = 0;
+        let isPanning = false;
+        let startPanX = 0;
+        let startPanY = 0;
+        let panOffsetX = 0; // Current pan offset X
+        let panOffsetY = 0; // Current pan offset Y
+        let panStartOffsetX = 0; // Pan offset at start of drag
+        let panStartOffsetY = 0; // Pan offset at start of drag 
+        
+        // --- DOM Elements ---
+        const paletteGrid = document.getElementById('palette-grid');
+        const selectedIndexSpan = document.getElementById('selected-index');
+        const originalColorSpan = document.getElementById('original-color');
+        const colorPicker = document.getElementById('color-picker');
+        const targetHexInput = document.getElementById('target-hex');
+        const targetPreview = document.getElementById('target-preview');
+        const mappingOutput = document.getElementById('mapping-output');
+        const addMappingBtn = document.getElementById('add-mapping-btn');
+        const copyBtn = document.getElementById('copy-btn');
+        const imageUpload = document.getElementById('image-upload');
+        const previewCanvas = document.getElementById('preview-canvas');
+        const canvasPlaceholder = document.getElementById('canvas-placeholder');
+        const eyedropperBtn = document.getElementById('eyedropper-btn');
+        const readColorSpan = document.getElementById('read-color');
+        const liveIndexSpan = document.getElementById('live-index');
+        const canvasContainer = document.getElementById('canvas-container');
+        const tiledPreviewContainer = document.getElementById('tiled-preview-container');
+        const framesToShowInput = document.getElementById('frames-to-show');
+        const exportPngBtn = document.getElementById('export-png-btn'); // NEW
+        const exportBmpBtn = document.getElementById('export-bmp-btn'); // NEW
+        const resetPositionBtn = document.getElementById('reset-position-btn'); // NEW
+        const multiselectBtn = document.getElementById('multiselect-btn'); // NEW
+        const multiselectStatus = document.getElementById('multiselect-status'); // NEW
+        const ctx = previewCanvas.getContext('2d');
+        
+        // HSL Elements
+        const sliderHue = document.getElementById('slider-hue');
+        const sliderSaturation = document.getElementById('slider-saturation');
+        const sliderLightness = document.getElementById('slider-lightness');
+        const hueValueSpan = document.getElementById('hue-value');
+        const saturationValueSpan = document.getElementById('saturation-value');
+        const lightnessValueSpan = document.getElementById('lightness-value');
+        
+        // Zoom/Frame Elements
+        const zoomInBtn = document.getElementById('zoom-in-btn');
+        const zoomOutBtn = document.getElementById('zoom-out-btn');
+        const zoomLevelText = document.getElementById('zoom-level-text');
+        const prevFrameBtn = document.getElementById('prev-frame-btn');
+        const nextFrameBtn = document.getElementById('next-frame-btn');
+        const frameStatusSpan = document.getElementById('frame-status');
+
+
+        // --- Utility Functions ---
+        
+        function rgbToHex({ r, g, b }) {
+            const componentToHex = (c) => {
+                const hex = Math.max(0, Math.min(255, c)).toString(16);
+                return hex.length == 1 ? "0" + hex : hex;
+            };
+            return `#${componentToHex(r)}${componentToHex(g)}${componentToHex(b)}`.toUpperCase();
+        }
+        
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 0, g: 0, b: 0 };
+        }
+
+        function colorDistance(r1, g1, b1, r2, g2, b2) {
+            return (r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2;
+        }
+
+        function findClosestPaletteIndex(r, g, b) {
+            let minDistance = Infinity;
+            let closestIndex = -1;
+
+            for (let i = 0; i < PALETTE_SIZE; i++) {
+                const hex = paletteColors[i];
+                if (!hex) continue; 
+                
+                const rgb = hexToRgb(hex);
+                const distance = colorDistance(r, g, b, rgb.r, rgb.g, rgb.b);
+
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestIndex = i;
+                }
+            }
+            return closestIndex;
+        }
+
+        function hslToRgb(h, s, l) {
+            h /= 360; s /= 100; l /= 100;
+            let r, g, b;
+            if (s === 0) { r = g = b = l; } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1; if (t > 1) t -= 1;
+                    if (t < 1 / 6) return p + (q - p) * 6 * t;
+                    if (t < 1 / 2) return q;
+                    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+            }
+            return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
+        }
+
+        function rgbToHsl(r, g, b) {
+            r /= 255; g /= 255; b /= 255;
+            const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+            let h, s, l = (max + min) / 2;
+
+            if (max === min) { h = s = 0; } else {
+                const d = max - min;
+                s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                switch (max) {
+                    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                    case g: h = (b - r) / d + 2; break;
+                    case b: h = (r - g) / d + 4; break;
+                }
+                h /= 6;
+            }
+            
+            return { h: Math.round(h * 360), s: s * 100, l: l * 100 }; // S and L are floats here
+        }
+
+        
+        // --- Multiselect Functions ---
+        
+        function toggleMultiselect() {
+            isMultiselectEnabled = !isMultiselectEnabled;
+            
+            if (isMultiselectEnabled) {
+                multiselectBtn.textContent = 'Disable Multiselect';
+                multiselectBtn.classList.remove('bg-blue-500', 'hover:bg-blue-600');
+                multiselectBtn.classList.add('bg-red-500', 'hover:bg-red-600');
+                multiselectStatus.classList.remove('hidden');
+                
+                // Disable eyedropper when multiselect is enabled
+                eyedropperBtn.disabled = true;
+                eyedropperBtn.textContent = 'Eyedropper (Disabled)';
+                eyedropperBtn.classList.remove('bg-indigo-500', 'hover:bg-indigo-600');
+                eyedropperBtn.classList.add('bg-gray-400', 'cursor-not-allowed');
+                
+                // Clear single selection and convert to multiselect
+                if (selectedIndex !== null) {
+                    selectedIndices.add(selectedIndex);
+                    lastSelectedIndex = selectedIndex;
+                }
+                selectedIndex = null;
+                selectedIndexSpan.textContent = '--';
+                originalColorSpan.textContent = '--';
+            } else {
+                multiselectBtn.textContent = 'Enable Multiselect';
+                multiselectBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
+                multiselectBtn.classList.add('bg-blue-500', 'hover:bg-blue-600');
+                multiselectStatus.classList.add('hidden');
+                
+                // Re-enable eyedropper when multiselect is disabled (if images are loaded)
+                if (currentImages.length > 0) {
+                    eyedropperBtn.disabled = false;
+                    eyedropperBtn.textContent = 'Activate Eyedropper';
+                    eyedropperBtn.classList.remove('bg-gray-400', 'cursor-not-allowed');
+                    eyedropperBtn.classList.add('bg-indigo-500', 'hover:bg-indigo-600');
+                }
+                
+                // Clear multiselect and revert to single select
+                selectedIndices.clear();
+                lastSelectedIndex = null;
+                
+                // Clear all visual selections
+                document.querySelectorAll('.selected-box').forEach(el => el.classList.remove('selected-box'));
+            }
+            
+            updateMultiselectStatus();
+        }
+        
+        function updateMultiselectStatus() {
+            if (isMultiselectEnabled) {
+                multiselectStatus.textContent = `Multiselect: ON | Selected: ${selectedIndices.size}`;
+            }
+        }
+        
+        function selectRange(startIndex, endIndex) {
+            const start = Math.min(startIndex, endIndex);
+            const end = Math.max(startIndex, endIndex);
+            
+            for (let i = start; i <= end; i++) {
+                if (paletteColors[i]) { // Only select if color exists
+                    selectedIndices.add(i);
+                    const box = document.querySelector(`[data-index="${i}"]`);
+                    if (box) {
+                        box.classList.add('selected-box');
+                    }
+                }
+            }
+            
+            // Capture base HSL values after range selection
+            baseHSLValues = {};
+            selectedIndices.forEach(idx => {
+                const currentHex = colorMap[idx] || paletteColors[idx];
+                if (currentHex) {
+                    const rgb = hexToRgb(currentHex);
+                    baseHSLValues[idx] = rgbToHsl(rgb.r, rgb.g, rgb.b);
+                }
+            });
+            
+            // Update base HSL from first selected
+            if (selectedIndices.size > 0) {
+                const firstIndex = Array.from(selectedIndices)[0];
+                const colorToEdit = colorMap[firstIndex] || paletteColors[firstIndex];
+                const rgb = hexToRgb(colorToEdit);
+                baseHSL = rgbToHsl(rgb.r, rgb.g, rgb.b);
+            }
+            
+            updateMultiselectStatus();
+        }
+        
+        function commitMultiselectMapping(targetHSL, protectedIndices = new Set()) {
+            if (selectedIndices.size === 0) return;
+            
+            // Calculate HSL delta from base
+            const deltaH = targetHSL.h - baseHSL.h;
+            const deltaS = targetHSL.s - baseHSL.s;
+            const deltaL = targetHSL.l - baseHSL.l;
+            
+            selectedIndices.forEach(index => {
+                if (!protectedIndices.has(index)) {
+                    // Get the base HSL for this specific index
+                    const indexBaseHSL = baseHSLValues[index];
+                    if (!indexBaseHSL) return;
+                    
+                    // Apply relative changes
+                    let newH = (indexBaseHSL.h + deltaH) % 360;
+                    if (newH < 0) newH += 360;
+                    
+                    let newS = Math.max(0, Math.min(100, indexBaseHSL.s + deltaS));
+                    let newL = Math.max(0, Math.min(100, indexBaseHSL.l + deltaL));
+                    
+                    // Convert back to RGB/Hex
+                    const newRgb = hslToRgb(newH, newS, newL);
+                    const newHex = rgbToHex(newRgb);
+                    
+                    colorMap[index] = newHex;
+                    updatePaletteBox(index, newHex, false);
+                }
+            });
+            
+            redrawMainCanvas();
+            renderMappings();
+        }
+        
+        function getColorProtection(targetHex) {
+            const protectedIndices = new Set();
+            const targetRgb = hexToRgb(targetHex);
+            
+            // Protect colors that would become too similar (black/white edge cases)
+            const isNearBlack = targetRgb.r < 30 && targetRgb.g < 30 && targetRgb.b < 30;
+            const isNearWhite = targetRgb.r > 225 && targetRgb.g > 225 && targetRgb.b > 225;
+            
+            if (isNearBlack || isNearWhite) {
+                // Find indices that are already very similar to the target
+                selectedIndices.forEach(index => {
+                    const currentHex = colorMap[index] || paletteColors[index];
+                    if (currentHex) {
+                        const currentRgb = hexToRgb(currentHex);
+                        const distance = colorDistance(targetRgb.r, targetRgb.g, targetRgb.b, 
+                                                    currentRgb.r, currentRgb.g, currentRgb.b);
+                        
+                        // If already very similar, protect it
+                        if (distance < 100) {
+                            protectedIndices.add(index);
+                        }
+                    }
+                });
+                
+                // If too many would become identical, protect some
+                if (selectedIndices.size - protectedIndices.size > 3) {
+                    let protectedCount = 0;
+                    selectedIndices.forEach(index => {
+                        if (protectedCount < Math.floor(selectedIndices.size / 2) && !protectedIndices.has(index)) {
+                            protectedIndices.add(index);
+                            protectedCount++;
+                        }
+                    });
+                }
+            }
+            
+            return protectedIndices;
+        }
+
+
+        // --- HSL Handler Functions ---
+        
+        function commitLiveMapping(hex) {
+            if (isMultiselectEnabled) {
+                const rgb = hexToRgb(hex);
+                const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+                const protectedIndices = getColorProtection(hex);
+                commitMultiselectMapping(hsl, protectedIndices);
+                
+                if (protectedIndices.size > 0) {
+                    showNotification(`Protected ${protectedIndices.size} colors from becoming identical`, 'success');
+                }
+            } else {
+                if (selectedIndex === null) return;
+                colorMap[selectedIndex] = hex; 
+                updatePaletteBox(selectedIndex, hex, false); 
+                redrawMainCanvas(); 
+                renderMappings();
+            }
+        }
+
+        function updateTargetColorFromHex(hex) {
+            const formattedHex = hex.toUpperCase();
+            colorPicker.value = formattedHex;
+            targetHexInput.value = formattedHex;
+            targetPreview.style.backgroundColor = formattedHex;
+            updateHslSlidersFromHex(formattedHex);
+
+            if (selectedIndex !== null || (isMultiselectEnabled && selectedIndices.size > 0)) { 
+                commitLiveMapping(formattedHex); 
+            }
+        }
+
+        function updateHslSlidersFromHex(hex) {
+            const rgb = hexToRgb(hex);
+            const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+            
+            const roundedS = parseFloat(hsl.s.toFixed(1));
+            const roundedL = parseFloat(hsl.l.toFixed(1));
+            
+            sliderHue.value = hsl.h;
+            sliderSaturation.value = roundedS; 
+            sliderLightness.value = roundedL;
+            
+            updateHslSliderLabels(hsl.h, roundedS, roundedL);
+            updateSaturationBackground(hsl.h, roundedL);
+        }
+
+        function updateHslSliderLabels(h, s, l) {
+            hueValueSpan.textContent = `${h}°`;
+            saturationValueSpan.textContent = `${s.toFixed(1)}%`;
+            lightnessValueSpan.textContent = `${l.toFixed(1)}%`;
+        }
+
+        function updateSaturationBackground(h, l) {
+            sliderHue.style.background = 'linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)'; 
+            const start = hslToRgb(h, 0, l);
+            const end = hslToRgb(h, 100, l);
+            const startHex = rgbToHex(start);
+            const endHex = rgbToHex(end);
+            sliderSaturation.style.background = `linear-gradient(to right, ${startHex}, ${endHex})`;
+            const mid = hslToRgb(h, 100, 50);
+            const midHex = rgbToHex(mid);
+            sliderLightness.style.background = `linear-gradient(to right, #000, ${midHex}, #fff)`;
+        }
+
+
+        function handleHslInput() {
+            const h = parseInt(sliderHue.value);
+            const s = parseFloat(sliderSaturation.value);
+            const l = parseFloat(sliderLightness.value);
+            
+            updateHslSliderLabels(h, s, l);
+            updateSaturationBackground(h, l);
+            
+            const rgb = hslToRgb(h, s, l);
+            const hex = rgbToHex(rgb);
+
+            colorPicker.value = hex;
+            targetHexInput.value = hex;
+            targetPreview.style.backgroundColor = hex;
+            
+            if (selectedIndex !== null || (isMultiselectEnabled && selectedIndices.size > 0)) { 
+                commitLiveMapping(hex); 
+            }
+        }
+        
+        // --- Palette and Image Functions ---
+
+        function extractPaletteFromImage(img) {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = img.width;
+            tempCanvas.height = img.height;
+            tempCtx.drawImage(img, 0, 0);
+
+            const uniqueColors = new Set();
+            const imageData = tempCtx.getImageData(0, 0, img.width, img.height).data;
+
+            for (let i = 0; i < imageData.length; i += 4) {
+                const r = imageData[i];
+                const g = imageData[i + 1];
+                const b = imageData[i + 2];
+                const a = imageData[i + 3];
+                if (a > 10) { 
+                    const hex = rgbToHex({ r, g, b });
+                    uniqueColors.add(hex);
+                }
+            }
+
+            const colorArray = Array.from(uniqueColors);
+
+            colorArray.sort((a, b) => {
+                const hslA = rgbToHsl(hexToRgb(a).r, hexToRgb(a).g, hexToRgb(a).b);
+                const hslB = rgbToHsl(hexToRgb(b).r, hexToRgb(b).g, hexToRgb(b).b);
+                return hslA.h - hslB.h;
+            }); 
+
+            paletteColors.length = 0;
+            for (let i = 0; i < PALETTE_SIZE; i++) {
+                paletteColors.push(colorArray[i] || null); 
+            }
+            
+            generateInitialPalette();
+        }
+
+
+        function generateInitialPalette() {
+            paletteGrid.innerHTML = '';
+            
+            if (currentImages.length === 0) {
+                 paletteGrid.classList.add('empty');
+                 paletteGrid.innerHTML = '<p class="text-center text-gray-500">Load image to extract palette.</p>';
+                 return;
+            }
+
+            // Remove empty class when loading palette
+            paletteGrid.classList.remove('empty');
+
+            for (let i = 0; i < PALETTE_SIZE; i++) {
+                const originalHex = paletteColors[i];
+                if (!originalHex) continue; 
+
+                const displayColor = colorMap[i] || originalHex;
+
+                const box = document.createElement('div');
+                box.classList.add('color-box');
+                box.style.backgroundColor = displayColor;
+                box.dataset.index = i;
+                box.dataset.originalColor = originalHex; 
+                box.title = `Index ${i}: ${displayColor} (Original: ${originalHex})`;
+
+                box.addEventListener('click', (e) => selectColor(i, box, e));
+                paletteGrid.appendChild(box);
+            }
+        }
+
+        function selectColor(index, box, event) {
+            document.querySelectorAll('.live-hover-box').forEach(el => el.classList.remove('live-hover-box'));
+            
+            if (isMultiselectEnabled) {
+                // Multiselect mode
+                if (event.shiftKey && lastSelectedIndex !== null) {
+                    // Range selection with Shift+Click
+                    selectRange(lastSelectedIndex, index);
+                } else {
+                    // Toggle individual selection
+                    if (selectedIndices.has(index)) {
+                        selectedIndices.delete(index);
+                        box.classList.remove('selected-box');
+                    } else {
+                        selectedIndices.add(index);
+                        box.classList.add('selected-box');
+                    }
+                    lastSelectedIndex = index;
+                }
+                
+                updateMultiselectStatus();
+                
+                // Capture base HSL values for all selected indices
+                baseHSLValues = {};
+                if (selectedIndices.size > 0) {
+                    selectedIndices.forEach(idx => {
+                        const currentHex = colorMap[idx] || paletteColors[idx];
+                        if (currentHex) {
+                            const rgb = hexToRgb(currentHex);
+                            baseHSLValues[idx] = rgbToHsl(rgb.r, rgb.g, rgb.b);
+                        }
+                    });
+                    
+                    // Set base HSL from first selected color
+                    const firstIndex = Array.from(selectedIndices)[0];
+                    const colorToEdit = colorMap[firstIndex] || paletteColors[firstIndex];
+                    const rgb = hexToRgb(colorToEdit);
+                    baseHSL = rgbToHsl(rgb.r, rgb.g, rgb.b);
+                    updateTargetColorFromHex(colorToEdit);
+                }
+            } else {
+                // Single select mode
+                document.querySelectorAll('.selected-box').forEach(el => el.classList.remove('selected-box'));
+                
+                box.classList.add('selected-box');
+                selectedIndex = index;
+                selectedIndexSpan.textContent = index;
+                originalColorSpan.textContent = box.dataset.originalColor;
+                
+                addMappingBtn.disabled = true; 
+                addMappingBtn.classList.remove('hover:bg-green-600', 'transform', 'hover:scale-[1.01]', 'bg-green-500');
+                addMappingBtn.classList.add('bg-green-400');
+                
+                const colorToEdit = colorMap[index] || box.dataset.originalColor;
+                updateTargetColorFromHex(colorToEdit);
+            }
+        }
+        
+        function updatePaletteBox(index, hex, isLivePreview = false) {
+            const box = document.querySelector(`[data-index="${index}"]`);
+            if (box) {
+                const originalColor = box.dataset.originalColor;
+                const finalDisplayColor = colorMap[index] || originalColor; 
+
+                box.style.backgroundColor = finalDisplayColor;
+                box.title = `Index ${index}: ${finalDisplayColor} (Original: ${originalColor})`;
+                
+                if (index === selectedIndex) {
+                     box.classList.add('selected-box'); 
+                }
+            }
+        }
+
+
+        // --- Image Manipulation, Zoom, Pan, and Frame Functions ---
+        
+        function applyRemappingToImageData(img, effectiveMap) {
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = img.width;
+            tempCanvas.height = img.height;
+
+            tempCtx.drawImage(img, 0, 0);
+
+            const imageData = tempCtx.getImageData(0, 0, img.width, img.height);
+            const data = imageData.data;
+
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                const a = data[i + 3];
+
+                if (a < 10) continue; 
+
+                const closestIndex = findClosestPaletteIndex(r, g, b);
+
+                if (closestIndex !== -1 && effectiveMap[closestIndex]) {
+                    const mappedHex = effectiveMap[closestIndex];
+                    const mappedRgb = hexToRgb(mappedHex);
+
+                    data[i] = mappedRgb.r;
+                    data[i + 1] = mappedRgb.g;
+                    data[i + 2] = mappedRgb.b;
+                }
+            }
+
+            tempCtx.putImageData(imageData, 0, 0);
+            return tempCanvas; 
+        }
+
+
+        function redrawMainCanvas() {
+            const currentImage = currentImages[currentFrameIndex];
+            if (!currentImage) {
+                 previewCanvas.style.display = 'none';
+                 return;
+            }
+            
+            previewCanvas.width = currentImage.width;
+            previewCanvas.height = currentImage.height;
+
+            applyZoomTransform();
+            
+            const effectiveMap = colorMap; 
+            const remappedCanvas = applyRemappingToImageData(currentImage, effectiveMap);
+
+            ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            ctx.drawImage(remappedCanvas, 0, 0);
+            
+            previewCanvas.style.display = 'block';
+
+            updateTiledPreview();
+        }
+
+        function updateTiledPreview() {
+            const container = tiledPreviewContainer;
+            container.innerHTML = '';
+            
+            if (currentImages.length === 0) {
+                container.innerHTML = '<p class="text-gray-500">Load files to see animation strip.</p>';
+                return;
+            }
+
+            const framesToShow = parseInt(framesToShowInput.value) || 1;
+            const totalFrames = currentImages.length;
+            const startIndex = currentFrameIndex; 
+
+            const effectiveMap = colorMap; 
+
+            for (let i = 0; i < framesToShow; i++) {
+                const frameIndex = (startIndex + i) % totalFrames;
+                const img = currentImages[frameIndex];
+                
+                if (!img) continue;
+
+                const frameWrapper = document.createElement('div');
+                frameWrapper.className = `flex flex-col items-center p-2 rounded-md ${frameIndex === startIndex ? 'bg-purple-200 border-2 border-purple-600' : 'bg-gray-200'} flex-shrink-0`;
+                frameWrapper.style.width = '100px'; 
+                frameWrapper.style.height = 'auto'; 
+
+                const tileCanvas = document.createElement('canvas');
+                tileCanvas.classList.add('tile-canvas');
+                tileCanvas.width = img.width;
+                tileCanvas.height = img.height;
+                tileCanvas.style.width = '90px'; 
+                tileCanvas.style.height = '90px';
+
+                const remappedCanvas = applyRemappingToImageData(img, effectiveMap);
+                tileCanvas.getContext('2d').drawImage(remappedCanvas, 0, 0);
+                
+                const label = document.createElement('span');
+                label.textContent = `Frame ${frameIndex + 1}`;
+                label.className = 'text-xs mt-1 text-gray-700 font-semibold';
+
+                frameWrapper.appendChild(tileCanvas);
+                frameWrapper.appendChild(label);
+                container.appendChild(frameWrapper);
+            }
+        }
+
+
+        function applyZoomTransform() {
+            if (currentImages.length === 0 || !currentImages[currentFrameIndex]) return;
+            const currentImage = currentImages[currentFrameIndex];
+            
+            previewCanvas.style.width = `${currentImage.width * zoomLevel}px`;
+            previewCanvas.style.height = `${currentImage.height * zoomLevel}px`;
+            
+            // Just update position with current offsets (don't recenter)
+            updateCanvasPosition();
+        }
+        
+        function updateCanvasPosition() {
+            if (currentImages.length === 0 || !currentImages[currentFrameIndex]) return;
+            
+            // Simply apply the pan offset via transform
+            previewCanvas.style.transform = `translate(${panOffsetX}px, ${panOffsetY}px)`;
+        }
+        
+        function centerCanvas() {
+            if (currentImages.length === 0 || !currentImages[currentFrameIndex]) return;
+            
+            const container = canvasContainer;
+            const canvas = previewCanvas;
+            
+            // Calculate center position
+            const containerCenterX = container.clientWidth / 2;
+            const containerCenterY = container.clientHeight / 2;
+            const canvasCenterX = canvas.clientWidth / 2;
+            const canvasCenterY = canvas.clientHeight / 2;
+            
+            // Set pan offset to center the canvas
+            panOffsetX = containerCenterX - canvasCenterX;
+            panOffsetY = containerCenterY - canvasCenterY;
+            
+            updateCanvasPosition();
+        }
+
+
+        function updateZoomControls() {
+            zoomLevelText.textContent = `${Math.round(zoomLevel * 100)}%`;
+            const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
+            
+            zoomOutBtn.disabled = currentIndex === 0 || currentImages.length === 0; 
+            zoomInBtn.disabled = currentIndex === ZOOM_LEVELS.length - 1 || currentImages.length === 0;
+        }
+
+        function handleZoom(direction) {
+            if (currentImages.length === 0) return;
+            
+            const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
+            let newIndex = currentIndex;
+            
+            if (direction === 'in') {
+                newIndex = Math.min(ZOOM_LEVELS.length - 1, currentIndex + 1);
+            } else if (direction === 'out') {
+                newIndex = Math.max(0, currentIndex - 1);
+            }
+            
+            const oldZoom = zoomLevel;
+            zoomLevel = ZOOM_LEVELS[newIndex];
+            
+            if (zoomLevel === oldZoom) return;
+
+            applyZoomTransform();
+            updateZoomControls();
+        }
+        
+        function handleScrollZoom(event) {
+            if (currentImages.length === 0) return;
+            
+            // Only zoom when scrolling over the canvas container
+            if (!canvasContainer.contains(event.target) && event.target !== canvasContainer) return;
+            
+            event.preventDefault();
+            
+            const direction = event.deltaY < 0 ? 'in' : 'out';
+            handleZoom(direction);
+        }
+        
+        // --- Pan/Drag Logic ---
+        
+        function startPan(e) {
+            if (isEyedropperActive) return; 
+            // Allow panning with left mouse button (0) or middle mouse button (1)
+            if (e.button !== 0 && e.button !== 1) return;
+            
+            isPanning = true;
+            canvasContainer.classList.add('panning');
+            startPanX = e.clientX;
+            startPanY = e.clientY;
+            panStartOffsetX = panOffsetX;
+            panStartOffsetY = panOffsetY;
+            e.preventDefault(); 
+        }
+        
+        function duringPan(e) {
+            if (!isPanning) return;
+            
+            const dx = e.clientX - startPanX; 
+            const dy = e.clientY - startPanY;
+            
+            panOffsetX = panStartOffsetX + dx;
+            panOffsetY = panStartOffsetY + dy;
+            
+            updateCanvasPosition();
+        }
+        
+        function endPan() {
+            isPanning = false;
+            canvasContainer.classList.remove('panning');
+        }
+        
+        // --- Reset Pan Function ---
+        function resetPan() {
+            if (currentImages.length === 0) return;
+            
+            // Center the canvas
+            centerCanvas();
+            
+            showNotification('Image position reset to center', 'success');
+        }
+
+
+        // --- Eyedropper Logic (Unchanged) ---
+
+        function toggleEyedropper() {
+            if (currentImages.length === 0) return;
+            isEyedropperActive = !isEyedropperActive;
+            if (isEyedropperActive) {
+                previewCanvas.classList.add('eyedropper-active');
+                eyedropperBtn.textContent = 'Eyedropper ON (Click to confirm)';
+                eyedropperBtn.classList.remove('bg-indigo-500');
+                eyedropperBtn.classList.add('bg-red-500');
+                previewCanvas.addEventListener('mousemove', handleCanvasMove);
+                canvasContainer.removeEventListener('mousedown', startPan);
+            } else {
+                previewCanvas.classList.remove('eyedropper-active');
+                eyedropperBtn.textContent = 'Activate Eyedropper';
+                eyedropperBtn.classList.remove('bg-red-500');
+                eyedropperBtn.classList.add('bg-indigo-500');
+                previewCanvas.removeEventListener('mousemove', handleCanvasMove);
+                liveIndexSpan.textContent = '--';
+                document.querySelectorAll('.live-hover-box').forEach(el => el.classList.remove('live-hover-box'));
+                canvasContainer.addEventListener('mousedown', startPan);
+            }
+        }
+        
+        function getUnscaledPixelCoords(event) {
+            const rect = previewCanvas.getBoundingClientRect();
+            const x = Math.floor((event.clientX - rect.left) / zoomLevel);
+            const y = Math.floor((event.clientY - rect.top) / zoomLevel);
+
+            return { x, y };
+        }
+
+        function handleCanvasMove(event) {
+            if (!isEyedropperActive) return;
+            const currentImage = currentImages[currentFrameIndex];
+            const { x, y } = getUnscaledPixelCoords(event);
+
+            if (x < 0 || y < 0 || x >= currentImage.width || y >= currentImage.height) return;
+
+            const pixel = ctx.getImageData(x, y, 1, 1).data;
+            const r = pixel[0]; const g = pixel[1]; const b = pixel[2];
+            
+            if (pixel[3] < 10) {
+                 readColorSpan.textContent = 'TRANSPARENT'; liveIndexSpan.textContent = '--';
+                 document.querySelectorAll('.live-hover-box').forEach(el => el.classList.remove('live-hover-box'));
+                 return;
+            }
+
+            const hex = rgbToHex({ r, g, b });
+            readColorSpan.textContent = hex;
+            
+            const closestIndex = findClosestPaletteIndex(r, g, b); 
+            
+            document.querySelectorAll('.live-hover-box').forEach(el => el.classList.remove('live-hover-box'));
+            
+            if (closestIndex !== -1) {
+                liveIndexSpan.textContent = closestIndex;
+                const box = document.querySelector(`[data-index="${closestIndex}"]`);
+                if (box) { box.classList.add('live-hover-box'); }
+            } else {
+                liveIndexSpan.textContent = 'NO MATCH';
+            }
+        }
+
+        function handleCanvasClick(event) {
+            if (!isEyedropperActive) return;
+
+            const currentImage = currentImages[currentFrameIndex];
+            const { x, y } = getUnscaledPixelCoords(event);
+            
+            if (x < 0 || y < 0 || x >= currentImage.width || y >= currentImage.height) return;
+            
+            const pixel = ctx.getImageData(x, y, 1, 1).data;
+            const r = pixel[0]; const g = pixel[1]; const b = pixel[2];
+            
+            if (pixel[3] < 10) {
+                showNotification("Clicked on transparent area. Please select a colored pixel.", 'error');
+                toggleEyedropper();
+                return;
+            }
+            
+            const hex = rgbToHex({ r, g, b });
+            const closestIndex = findClosestPaletteIndex(r, g, b);
+            
+            if (closestIndex !== -1) {
+                const box = document.querySelector(`[data-index="${closestIndex}"]`);
+                selectColor(closestIndex, box); 
+                showNotification(`Image color (now ${hex}) matched to Source Index ${closestIndex}.`, 'success');
+            } else {
+                 showNotification("Could not find closest palette index.", 'error');
+            }
+
+            toggleEyedropper();
+        }
+
+
+        // --- Output & Notification Functions ---
+
+        function renderMappings() {
+            const mappings = Object.keys(colorMap).sort((a, b) => a - b).map(index => {
+                const hex = colorMap[index];
+                return `${index}=${hex}`; 
+            });
+
+            if (mappings.length > 0) {
+                mappingOutput.textContent = mappings.join('\n');
+                copyBtn.disabled = false;
+            } else {
+                mappingOutput.textContent = "/* Your custom palette mappings will appear here. */";
+                copyBtn.disabled = true;
+            }
+        }
+
+        let notificationTimeout;
+        function showNotification(message, type) {
+            clearTimeout(notificationTimeout);
+            let notification = document.getElementById('notification');
+            if (!notification) {
+                notification = document.createElement('div');
+                notification.id = 'notification';
+                document.body.appendChild(notification);
+            }
+            notification.textContent = message;
+            notification.className = ''; 
+            notification.classList.add('fixed', 'bottom-5', 'right-5', 'p-4', 'rounded-lg', 'shadow-xl', 'text-white', 'transition-opacity', 'duration-300', 'opacity-100', 'z-50');
+            notification.classList.add(type === 'error' ? 'bg-red-500' : 'bg-green-500');
+
+            notificationTimeout = setTimeout(() => {
+                notification.classList.remove('opacity-100');
+                notification.classList.add('opacity-0');
+            }, 3000);
+        }
+
+        function copyToClipboard() {
+            const text = mappingOutput.textContent;
+            const tempTextArea = document.createElement('textarea');
+            tempTextArea.value = text;
+            document.body.appendChild(tempTextArea);
+            tempTextArea.select();
+            
+            try {
+                document.execCommand('copy');
+                showNotification('Copied Mappings to clipboard!', 'success');
+            } catch (err) {
+                showNotification('Failed to copy. Please copy manually.', 'error');
+            } finally {
+                document.body.removeChild(tempTextArea);
+            }
+        }
+
+        // --- Export Functions (NEW) ---
+        
+        function downloadFile(blob, fileName) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+        }
+
+        // Function to generate a 24-bit BMP file (pure JS implementation)
+        function createBmp24Bit(canvas) {
+            const width = canvas.width;
+            const height = canvas.height;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.getImageData(0, 0, width, height).data;
+
+            // Row size padded to 4-byte boundary: (24 * width + 31) / 32 * 4 bytes
+            const rowSize = Math.floor((24 * width + 31) / 32) * 4; 
+            const pixelDataSize = rowSize * height;
+            const fileSize = 54 + pixelDataSize; // 54 = header size (14 file + 40 info)
+
+            const buffer = new ArrayBuffer(fileSize);
+            const view = new DataView(buffer);
+            let offset = 0;
+
+            // --- BITMAPFILEHEADER (14 bytes) ---
+            view.setUint8(offset, 0x42); offset += 1; // B
+            view.setUint8(offset, 0x4D); offset += 1; // M
+            view.setUint32(offset, fileSize, true); offset += 4; // File size
+            view.setUint32(offset, 0, true); offset += 4;       // Reserved
+            view.setUint32(offset, 54, true); offset += 4;      // Data offset
+
+            // --- BITMAPINFOHEADER (40 bytes) ---
+            view.setUint32(offset, 40, true); offset += 4; // Header size
+            view.setInt32(offset, width, true); offset += 4; // Width
+            view.setInt32(offset, height, true); offset += 4; // Height (Bottom-up)
+            view.setUint16(offset, 1, true); offset += 2; // Color planes (1)
+            view.setUint16(offset, 24, true); offset += 2; // Bits per pixel (24)
+            view.setUint32(offset, 0, true); offset += 4; // Compression (0)
+            view.setUint32(offset, pixelDataSize, true); offset += 4; // Image size
+            view.setInt32(offset, 2835, true); offset += 4; // Horizontal resolution (72 dpi)
+            view.setInt32(offset, 2835, true); offset += 4; // Vertical resolution
+            view.setUint32(offset, 0, true); offset += 4; // Colors in palette (0)
+            view.setUint32(offset, 0, true); offset += 4; // Important colors (0)
+
+            // --- PIXEL DATA ---
+            const padding = rowSize - (width * 3); 
+            
+            // Loop from the bottom row for BMP format
+            for (let y = height - 1; y >= 0; y--) {
+                for (let x = 0; x < width; x++) {
+                    const i = (y * width + x) * 4; // Index into RGBA ImageData array
+                    // BMP stores BGR
+                    view.setUint8(offset, imageData[i + 2]); offset += 1; // Blue
+                    view.setUint8(offset, imageData[i + 1]); offset += 1; // Green
+                    view.setUint8(offset, imageData[i]); offset += 1;     // Red
+                }
+                // Add padding bytes
+                for (let p = 0; p < padding; p++) {
+                    view.setUint8(offset, 0); offset += 1;
+                }
+            }
+
+            return new Blob([buffer], { type: 'image/bmp' });
+        }
+
+        // Function to export a single frame
+        function exportFrame(img, frameIndex, format) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = img.width;
+            tempCanvas.height = img.height;
+            
+            // Remap the image using the current global color map
+            const remappedCanvas = applyRemappingToImageData(img, colorMap); 
+            
+            // Draw the remapped image onto the temporary canvas 
+            tempCanvas.getContext('2d').drawImage(remappedCanvas, 0, 0);
+
+            const baseName = `frame_${String(frameIndex + 1).padStart(3, '0')}`;
+            let fileName;
+
+            if (format === 'png') {
+                fileName = `${baseName}.png`;
+                tempCanvas.toBlob(b => {
+                    if (b) {
+                        downloadFile(b, fileName);
+                        showNotification(`Exported ${fileName} successfully.`, 'success');
+                    } else {
+                        showNotification(`Failed to generate PNG for frame ${frameIndex + 1}.`, 'error');
+                    }
+                }, 'image/png');
+                return; // toBlob is async
+            } 
+            
+            if (format === 'bmp') {
+                fileName = `${baseName}.bmp`;
+                const blob = createBmp24Bit(tempCanvas); 
+                downloadFile(blob, fileName);
+                showNotification(`Exported ${fileName} successfully.`, 'success');
+            }
+        }
+
+        // Function to export all frames
+        function exportAllFrames(format) {
+            if (currentImages.length === 0) {
+                showNotification("No frames loaded to export.", 'error');
+                return;
+            }
+            
+            showNotification(`Starting export of ${currentImages.length} frames as ${format.toUpperCase()}... Check your downloads folder.`, 'success');
+
+            // Loop through all images and export them separately with a slight delay
+            currentImages.forEach((img, index) => {
+                setTimeout(() => {
+                    exportFrame(img, index, format);
+                }, index * 150); // Small delay to help browsers manage multiple downloads
+            });
+        }
+
+        // --- Frame/Image Functions ---
+        
+        function loadImage(files) {
+            if (files.length === 0) {
+                currentImages = []; currentFrameIndex = 0;
+                previewCanvas.style.display = 'none';
+                canvasPlaceholder.classList.remove('hidden');
+                eyedropperBtn.disabled = true; zoomInBtn.disabled = true; zoomOutBtn.disabled = true;
+                resetPositionBtn.disabled = true; // Disable reset position
+                exportPngBtn.disabled = true; exportBmpBtn.disabled = true; // Disable export
+                updateFrameControls(); generateInitialPalette(); updateTiledPreview();
+                return;
+            }
+            
+            currentImages = []; currentFrameIndex = 0;
+
+            const loadPromises = Array.from(files).map(file => {
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const img = new Image();
+                        img.onload = () => { resolve(img); };
+                        img.src = e.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                });
+            });
+
+            Promise.all(loadPromises).then(images => {
+                currentImages = images;
+                const firstImage = currentImages[0];
+                
+                extractPaletteFromImage(firstImage);
+                redrawMainCanvas();
+                
+                // Center the canvas on initial load
+                centerCanvas();
+                
+                canvasPlaceholder.classList.add('hidden');
+                eyedropperBtn.disabled = false;
+                resetPositionBtn.disabled = false; // Enable reset position
+                exportPngBtn.disabled = false; exportBmpBtn.disabled = false; // Enable export
+                
+                updateFrameControls();
+                updateZoomControls();
+            }).catch(e => {
+                console.error("Error loading images:", e);
+                showNotification("Error loading images.", 'error');
+            });
+        }
+        
+        function updateFrameControls() {
+            const totalFrames = currentImages.length;
+            frameStatusSpan.textContent = totalFrames > 0 ? `${currentFrameIndex + 1}/${totalFrames}` : '0/0';
+            
+            const disableFrames = totalFrames <= 1;
+            
+            prevFrameBtn.disabled = disableFrames || currentFrameIndex === 0; 
+            nextFrameBtn.disabled = disableFrames || currentFrameIndex === totalFrames - 1;
+        }
+
+        function changeFrame(direction) {
+            if (currentImages.length <= 1) return;
+
+            const previousIndex = currentFrameIndex;
+            let newIndex = currentFrameIndex + direction;
+            newIndex = Math.max(0, Math.min(currentImages.length - 1, newIndex));
+
+            if (newIndex === previousIndex) return; 
+            
+            currentFrameIndex = newIndex;
+
+            redrawMainCanvas(); 
+            updateFrameControls(); 
+        }
+
+        // --- Event Listeners and Initialization ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            generateInitialPalette();
+
+            // Target Color Events (HSL/Hex)
+            sliderHue.addEventListener('input', handleHslInput);
+            sliderSaturation.addEventListener('input', handleHslInput);
+            sliderLightness.addEventListener('input', handleHslInput);
+            colorPicker.addEventListener('input', (e) => updateTargetColorFromHex(e.target.value));
+            targetHexInput.addEventListener('input', (e) => updateTargetColorFromHex(e.target.value));
+            
+            copyBtn.addEventListener('click', copyToClipboard);
+            framesToShowInput.addEventListener('change', () => updateTiledPreview());
+            
+            // NEW: Export Events
+            exportPngBtn.addEventListener('click', () => exportAllFrames('png'));
+            exportBmpBtn.addEventListener('click', () => exportAllFrames('bmp'));
+            
+            // NEW: Reset Position and Multiselect Events
+            resetPositionBtn.addEventListener('click', resetPan);
+            multiselectBtn.addEventListener('click', toggleMultiselect);
+
+            // Image and Eyedropper Events
+            imageUpload.addEventListener('change', (e) => loadImage(e.target.files));
+            eyedropperBtn.addEventListener('click', toggleEyedropper);
+            previewCanvas.addEventListener('click', handleCanvasClick);
+            
+            // Pan/Drag Events (Left-click and Middle-click)
+            canvasContainer.addEventListener('mousedown', startPan);
+            document.addEventListener('mousemove', duringPan); 
+            document.addEventListener('mouseup', endPan);
+            canvasContainer.addEventListener('mouseleave', () => { 
+                if (isPanning) endPan();
+            });
+            
+            // Prevent middle mouse button default behavior (scrolling)
+            canvasContainer.addEventListener('mousedown', (e) => {
+                if (e.button === 1) { // Middle mouse button
+                    e.preventDefault();
+                }
+            });
+            
+            // Keyboard Events
+            document.addEventListener('keydown', (e) => {
+                // Only trigger keyboard shortcuts if not typing in an input field
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                
+                // Reset pan position when 'X' key is pressed
+                if (e.key.toLowerCase() === 'x' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+                    e.preventDefault();
+                    resetPan();
+                }
+                
+                // Arrow keys for frame navigation
+                if (currentImages.length > 1) {
+                    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        changeFrame(-1); // Previous frame
+                    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        changeFrame(1); // Next frame
+                    }
+                }
+                
+                // Plus/Minus keys for zoom
+                if (currentImages.length > 0) {
+                    if (e.key === '+' || e.key === '=' || e.key === 'NumpadAdd') {
+                        e.preventDefault();
+                        handleZoom('in'); // Zoom in
+                    } else if (e.key === '-' || e.key === '_' || e.key === 'NumpadSubtract') {
+                        e.preventDefault();
+                        handleZoom('out'); // Zoom out
+                    }
+                }
+            });
+            
+            // Zoom Events
+            zoomInBtn.addEventListener('click', () => handleZoom('in'));
+            zoomOutBtn.addEventListener('click', () => handleZoom('out'));
+            
+            // NEW: Scroll Wheel Zoom
+            canvasContainer.addEventListener('wheel', handleScrollZoom, { passive: false });
+            
+            // Frame Navigation Events 
+            prevFrameBtn.addEventListener('click', () => changeFrame(-1));
+            nextFrameBtn.addEventListener('click', () => changeFrame(1));
+
+            // Initial setup 
+            updateTargetColorFromHex(targetHexInput.value);
+            updateFrameControls();
+            updateZoomControls();
+        });
+
+    </script>
+</body>
+</html>
