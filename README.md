@@ -7,7 +7,9 @@
 
 A powerful, browser-based palette editor for converting images to BMP v-24 format with advanced color remapping capabilities. Perfect for pixel art, game development, and animation workflows! ✨
 
-![Preview](preview.gif)
+[Check out a live version here!](https://tools.mewsie.world/Img2BmpEditor.html)
+
+[![Preview](preview.gif)](https://tools.mewsie.world/Img2BmpEditor.html)
 
 ## 🌟 Features
 
